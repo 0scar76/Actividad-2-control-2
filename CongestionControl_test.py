@@ -50,4 +50,12 @@ def congestion_control_object_test(MSS):
     timeout_in_congestion_avoidance_test(congestion_controler, MSS)
 
 MSS = 7
+print("default test")
 congestion_control_object_test(MSS)
+print()
+
+print("test with multiple MSS")
+for i in range(30):
+    print(f"test MSS = {i+1}")
+    congestion_control_object_test(i+1)
+    print()
