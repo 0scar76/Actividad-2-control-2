@@ -45,5 +45,5 @@ anotar al final
 
 ## Respuestas a las preguntas (escribir mas bonito dsp)
 
-1. Porque stop & wait es equivalente a usar go back n con ventana = 1
-2. Para receive no hay cambio significativo, ya que si recibe un numero de secuencia incorrecto, reenvia el ACK del ultimo mensaje "correcto" que obtuvo
+1. Porque stop & wait es equivalente a usar go back n con ventana = 1.
+2. Para receive el unico cambio significativo es el manejo de los numeros de secuencia, en vez de enviar un ACK con el numero de secuencia aumentado en el tamaño del mensaje recibido, solo aumenta seq en 1.
