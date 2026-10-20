@@ -790,12 +790,24 @@ class SocketTCP:
                     parsed_msg = self.parse_segment(msg)
                     if self.debug:
                         print("recibi:", parsed_msg)
+                    # el receptor ya cerro, no tiene sentido seguir enviando
+                    if snd == self.remote_address and parsed_msg["FIN"] == 1:
+                        self.sckt.settimeout(normal_timeout)
+                        if self.debug:
+                            print("se recibio mensaje de cierre")
+                            print("se acabo send")
+                        self.recv_close()
+                        return
                     if snd == self.remote_address and parsed_msg["SYN"] == 1 and parsed_msg["ACK"] == 1:
                         self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
                         if self.debug:
                             print("envie:", self.last_send)
                 except TimeoutError:
                     pass
+                except:
+                    if self.debug:
+                        print("ya se habia cerrado la conexion")
+                    return
                 self.sckt.settimeout(normal_timeout)
 
                 timeouts += 1
