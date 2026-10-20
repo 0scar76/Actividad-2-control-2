@@ -1,9 +1,11 @@
 import socket
 from socketUDP import SocketUDP
 from slidingWindowCC import SlidingWindowCC as swcc
+from CongestionControl import CongestionControl
 import random
 
 MAX_PACKET_SIZE = 16
+MSS = 8 # no puede superar 16, porque recv lee de a 5 + 16 bytes
 BYTES_NUM = 1
 LIMIT = 30
 
@@ -20,13 +22,17 @@ class SocketTCP:
 
         self.last_send = None
         self.remote_address = None
-        self.remote_address_gbn = None
+        self.remote_address_gbn = ""
         self.message_remaining = b''
         self.len_msg = 0
         self.len_sended = 0
         self.message_seq = 0
         self.ip = None
         self.port = None
+        self.congestion_control_on = False
+
+    def set_congestion_control(self, value):
+        self.congestion_control_on = value
 
     def parse_segment(self, message):
         SYN = 0
@@ -116,10 +122,10 @@ class SocketTCP:
                     if self.debug:
                         print("se supero el umbral de espera de mensajes, para no esperar eternamente voy a dejar de intentar")
                     return
-            # except:
-            #     if self.debug:
-            #         print("ya se habia cerrado la conexion")
-            #     return
+            except:
+                if self.debug:
+                    print("ya se habia cerrado la conexion")
+                return
 
 
         self.message_seq += 2
@@ -156,15 +162,11 @@ class SocketTCP:
         self.last_send = third_shake
         self.remote_address = server_address
 
-        sv_ip, sv_prt = server_address
-        self.remote_address_gbn = (sv_ip, sv_prt + 1)
-
         print(f"Se conecto a {address}")
 
     def bind(self, address):
         self.sckt.bind(address)
         self.ip, self.port = address
-        self.sckt_gbn.bind((self.ip, self.port + 1))
 
     def accept(self):
         parsed_first = {
@@ -238,7 +240,6 @@ class SocketTCP:
         new_sckt.remote_address = server_address
 
         sv_ip, sv_prt = server_address
-        new_sckt.remote_address_gbn = (sv_ip, sv_prt + 1)
 
         new_sckt.message_seq = parsed_third["seq"]
         print("se establecio conexion")
@@ -536,7 +537,6 @@ class SocketTCP:
             print("se acabo send")
         return
 
-    # mismo codigo pero envia/recibe del puerto + 1
     def recv_using_go_back_n(self, buff_size):
         while self.len_msg == 0:
             parsed_first = {
@@ -553,8 +553,13 @@ class SocketTCP:
                 try:
                     first_message, sender = self.sckt.recvfrom(5 + 16)
                     parsed_first = self.parse_segment(first_message)
+                    if self.remote_address_gbn == "":
+                        sender_gbn_ip, sender_gbn_port = sender
+                        sender_ip, sender_port = self.remote_address
+                        if sender_ip == sender_gbn_ip: # si son la misma ip confio que es el puerto que usa el socketUDP
+                            self.remote_address_gbn = (sender_gbn_ip, sender_gbn_port)
                     if self.debug:
-                        print("recibi:", parsed_first, self.remote_address_gbn, sender)
+                        print("recibi:", parsed_first)
                     limit = 0
                     if parsed_first["FIN"] == 1:
                         if self.debug:
@@ -584,7 +589,6 @@ class SocketTCP:
                     return b''
         
             self.len_msg = int.from_bytes(parsed_first["data"]) # si sali del while recibi el mensaje correcto
-            self.message_seq += len(parsed_first["data"])
         
             first_response = {
                 "SYN": 0,
@@ -593,6 +597,7 @@ class SocketTCP:
                 "seq": self.message_seq,
                 "data": b''
             }
+            self.message_seq += len(parsed_first["data"])
         
             self.sckt.sendto(self.create_segment(first_response), self.remote_address_gbn)
             if self.debug:
@@ -658,7 +663,6 @@ class SocketTCP:
                 message += parsed_act["data"][0:min(self.len_msg, buff_size) - len(message)]
             else:
                 message += parsed_act["data"]
-            self.message_seq += len(parsed_act["data"])
         
             acknowledge = {
                 "SYN": 0,
@@ -667,6 +671,7 @@ class SocketTCP:
                 "seq": self.message_seq,
                 "data": b''
             }
+            self.message_seq += len(parsed_act["data"])
         
             self.sckt.sendto(self.create_segment(acknowledge), self.remote_address_gbn)
             if self.debug:
@@ -684,73 +689,147 @@ class SocketTCP:
             print("se acabo recv")
         return message
 
-    # implementar
     def send_using_go_back_n(self, message):
         msg_len = len(message)
-        data = [msg_len.to_bytes(BYTES_NUM)]
-        
-        i = 0
-        while i <= msg_len:
-            data.append(message[i:min(msg_len, i + MAX_PACKET_SIZE)])
-            i += MAX_PACKET_SIZE
+        data_list = [msg_len.to_bytes(BYTES_NUM)]
 
-        data_to_send = swcc(WINDOW_SIZE, data, self.message_seq)
+        # el mensaje se divide en trozos de tamaño MSS
+        for i in range(0, msg_len, MSS):
+            data_list.append(message[i:i + MSS])
 
-        t_index = 0
-        for i in range(WINDOW_SIZE):
-            if data_to_send.get_data(i) is not None:
-                current_data = data_to_send.get_data(i)
-                current_seq = data_to_send.get_sequence_number(i)
-                current_segment = {
+        congestion_controller = CongestionControl(MSS)
+        if self.congestion_control_on:
+            window_size = int(congestion_controller.get_MSS_in_cwnd())
+        else:
+            window_size = WINDOW_SIZE
+        data_window = swcc(window_size, data_list, self.message_seq)
+        end_seq = self.message_seq
+        for data in data_list:
+            end_seq += len(data)
+        self.sckt_gbn.set_timer_list_length(len(data_list))
+
+        base = 0
+        next_to_send = 0
+        timeouts = 0
+
+        while data_window.get_data(0) is not None:
+            while next_to_send < len(data_list) and next_to_send - base < window_size:
+                wnd_index = next_to_send - base
+                segment = {
                     "SYN": 0,
                     "ACK": 0,
                     "FIN": 0,
-                    "seq": current_seq,
-                    "data": current_data
+                    "seq": data_window.get_sequence_number(wnd_index),
+                    "data": data_window.get_data(wnd_index)
                 }
-                self.sckt_gbn.sendto(self.create_segment(current_segment), self.remote_address, timer_index=t_index)
+                self.sckt_gbn.sendto(self.create_segment(segment), self.remote_address, timer_index=next_to_send)
                 if self.debug:
-                    print("envie:", current_segment, self.remote_address_gbn, self.remote_address)
-            else:
-                break
+                    print("envie:", segment)
+                next_to_send += 1
 
-        while current_data is not None:
             try:
                 answer, sender = self.sckt_gbn.recvfrom(5 + 16)
                 parsed_ans = self.parse_segment(answer)
                 if self.debug:
                     print("recibi:", parsed_ans)
-                if sender == self.remote_address and parsed_ans["ACK"] == 1 and parsed_ans["seq"] == self.message_seq + len(current_data):
-                    self.sckt_gbn.stop_timer(timer_index=t_index)
-                    t_index += 1
-                    data_to_send.move_window(1)
-                    current_data = data_to_send.get_data(0)
-                    self.message_seq = data_to_send.get_sequence_number(0)
-                    current_segment = {
-                        "SYN": 0,
-                        "ACK": 0,
-                        "FIN": 0,
-                        "seq": self.message_seq,
-                        "data": current_data
-                    }
-            except TimeoutError:
-                t_index += 1
-                for i in range(WINDOW_SIZE):
-                    if data_to_send.get_data(i) is not None:
-                        try:
-                            self.sckt_gbn.sendto(self.create_segment(current_segment), self.remote_address, timer_index=t_index)
-                            if self.debug:
-                                print("envie:", current_segment)
-                        except IndexError:
-                            if self.debug:
-                                print("se supero el umbral de timeouts")
-                                print("se acabo send")
-                            self.close()
-                            return
-                    else:
+                if sender != self.remote_address or parsed_ans["ACK"] != 1:
+                    continue
+
+                ack_seq = parsed_ans["seq"]
+                if ack_seq < data_window.get_sequence_number(0):
+                    continue
+
+                # si el ACK es mayor que el ultimo seq de la ventana, se mueve la ventana completa
+                steps = 0
+                while data_window.get_data(0) is not None:
+                    for i in range(window_size):
+                        if data_window.get_data(i) is not None and data_window.get_sequence_number(i) == ack_seq:
+                            steps = i + 1
+                            break
+                    if steps > 0:
                         break
 
-        return
+                    last_seq = data_window.get_sequence_number(window_size - 1)
+                    if last_seq is None or ack_seq < last_seq:
+                        break
+
+                    for data_index in range(base, min(base + window_size, next_to_send)):
+                        self.sckt_gbn.stop_timer(timer_index=data_index)
+                    data_window.move_window(window_size)
+                    base += window_size
+
+                if steps > 0:
+                    for data_index in range(base, min(base + steps, next_to_send)):
+                        self.sckt_gbn.stop_timer(timer_index=data_index)
+                    data_window.move_window(steps)
+                    base += steps
+
+                next_to_send = max(next_to_send, base)
+                timeouts = 0
+
+                if self.congestion_control_on:
+                    congestion_controller.event_ack_received()
+                    window_size = int(congestion_controller.get_MSS_in_cwnd())
+                    data_window.update_window_size(window_size)
+                    if self.debug:
+                        print("cwnd:", congestion_controller.get_cwnd(), "window_size:", window_size)
+
+                if data_window.get_data(0) is not None:
+                    self.message_seq = data_window.get_sequence_number(0)
+
+            except TimeoutError:
+                if self.debug:
+                    print("no pude recibir")
+
+                # si se perdio el ultimo ACK del handshake, el server sigue mandando SYN-ACK al socket normal
+                # se revisa rapido (0.01 s) para no alargar cada timeout
+                normal_timeout = self.sckt.gettimeout()
+                self.sckt.settimeout(0.01)
+                try:
+                    msg, snd = self.sckt.recvfrom(5)
+                    parsed_msg = self.parse_segment(msg)
+                    if self.debug:
+                        print("recibi:", parsed_msg)
+                    # el receptor ya cerro, no tiene sentido seguir enviando
+                    if snd == self.remote_address and parsed_msg["FIN"] == 1:
+                        self.sckt.settimeout(normal_timeout)
+                        if self.debug:
+                            print("se recibio mensaje de cierre")
+                            print("se acabo send")
+                        self.recv_close()
+                        return
+                    if snd == self.remote_address and parsed_msg["SYN"] == 1 and parsed_msg["ACK"] == 1:
+                        self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
+                        if self.debug:
+                            print("envie:", self.last_send)
+                except TimeoutError:
+                    pass
+                except:
+                    if self.debug:
+                        print("ya se habia cerrado la conexion")
+                    return
+                self.sckt.settimeout(normal_timeout)
+
+                timeouts += 1
+                if timeouts == LIMIT:
+                    if self.debug:
+                        print("se supero el umbral de espera de mensajes, para no enviar eternamente voy a cerrar nomas")
+                        print("se acabo send")
+                    self.close()
+                    return
+                for data_index in range(base, next_to_send):
+                    self.sckt_gbn.stop_timer(timer_index=data_index)
+
+                if self.congestion_control_on:
+                    congestion_controller.event_timeout()
+                    window_size = int(congestion_controller.get_MSS_in_cwnd())
+                    data_window.update_window_size(window_size)
+                    if self.debug:
+                        print("cwnd:", congestion_controller.get_cwnd(), "window_size:", window_size)
+
+                next_to_send = base
+
+        self.message_seq = end_seq
 
     def close(self):
         try:
@@ -770,7 +849,11 @@ class SocketTCP:
                 if self.debug:
                     print("recibi:", parsed_response)
                 if parsed_response["SYN"] == 0 and parsed_response["ACK"] == 0 and parsed_response["FIN"] == 0:
-                    self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
+                    # si el dato viene del socket de go back n, el ACK se devuelve a ese socket
+                    if sender == self.remote_address_gbn:
+                        self.sckt.sendto(self.create_segment(self.last_send), self.remote_address_gbn)
+                    else:
+                        self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
                     if self.debug:
                         print("envie:", self.last_send)
                     parsed_response = {
@@ -816,6 +899,11 @@ class SocketTCP:
                         parsed_finack = self.parse_segment(finack)
                         if self.debug:
                             print("recibi:", parsed_finack)
+                        # el emisor de go back n sigue reenviando datos porque se perdio el ultimo ACK
+                        if sender == self.remote_address_gbn and parsed_finack["SYN"] == 0 and parsed_finack["ACK"] == 0 and parsed_finack["FIN"] == 0:
+                            self.sckt.sendto(self.create_segment(self.last_send), self.remote_address_gbn)
+                            if self.debug:
+                                print("envie:", self.last_send)
                     except TimeoutError:
                         if self.debug:
                             print("no recibi nada")
@@ -897,6 +985,11 @@ class SocketTCP:
                     parsed_finack = self.parse_segment(finack)
                     if self.debug:
                         print("recibi:", parsed_finack)
+                    # el emisor de go back n sigue reenviando datos porque se perdio el ultimo ACK
+                    if sender == self.remote_address_gbn and parsed_finack["SYN"] == 0 and parsed_finack["ACK"] == 0 and parsed_finack["FIN"] == 0:
+                        self.sckt.sendto(self.create_segment(self.last_send), self.remote_address_gbn)
+                        if self.debug:
+                            print("envie:", self.last_send)
                 except TimeoutError:
                     if self.debug:
                         print("no recibi nada")
