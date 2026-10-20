@@ -687,84 +687,75 @@ class SocketTCP:
         msg_len = len(message)
         data = [msg_len.to_bytes(BYTES_NUM)]
         
-        i = 0
-        while i <= msg_len:
-            data.append(message[i:min(msg_len, i + MAX_PACKET_SIZE)])
-            i += MAX_PACKET_SIZE
+        for i in range(0, msg_len, MAX_PACKET_SIZE):
+            data.append(message[i:i + MAX_PACKET_SIZE])
 
-        data_to_send = swcc(WINDOW_SIZE, data, self.message_seq)
+        window = swcc(WINDOW_SIZE, data, self.message_seq)
+        end_seq = self.message_seq + sum(len(d) for d in data)
+        self.sckt_gbn.set_timer_list_length(len(data))
 
-        t_index = 0
-        wnd_index = 0
-        for i in range(WINDOW_SIZE):
-            if data_to_send.get_data(i) is not None:
-                current_data = data_to_send.get_data(i)
-                current_seq = data_to_send.get_sequence_number(i)
-                current_segment = {
-                    "SYN": 0,
-                    "ACK": 0,
-                    "FIN": 0,
-                    "seq": current_seq,
-                    "data": current_data
-                }
-                self.sckt_gbn.sendto(self.create_segment(current_segment), self.remote_address, timer_index=t_index)
-                if self.debug:
-                    print("envie:", current_segment)
-                wnd_index += 1
-            else:
-                break
+        base = 0
+        next_to_send = 0
+        timeouts = 0
 
-        while current_data is not None:
+        def send_segment(data_index):
+            wnd_index = data_index - base
+            segment = {
+                "SYN": 0,
+                "ACK": 0,
+                "FIN": 0,
+                "seq": window.get_sequence_number(wnd_index),
+                "data": window.get_data(wnd_index)
+            }
+            self.sckt_gbn.sendto(self.create_segment(segment), self.remote_address, timer_index=data_index)
+            if self.debug:
+                print("envie:", segment)
+
+        def send_new_segments():
+            nonlocal next_to_send
+            while next_to_send < len(data) and next_to_send - base < window.window_size:
+                send_segment(next_to_send)
+                next_to_send += 1
+
+        send_new_segments()
+
+        while window.get_data(0) is not None:
             try:
                 answer, sender = self.sckt_gbn.recvfrom(5 + 16)
                 parsed_ans = self.parse_segment(answer)
                 if self.debug:
                     print("recibi:", parsed_ans)
-                if sender == self.remote_address:
-                    if parsed_ans["ACK"] == 1 and parsed_ans["seq"] == self.message_seq:
-                        self.sckt_gbn.stop_timer(timer_index=t_index)
-                        data_to_send.move_window(1)
-                        current_data = data_to_send.get_data(wnd_index)
-                        current_seq = data_to_send.get_sequence_number(wnd_index)
-                        if current_data is not None:
-                            self.message_seq = data_to_send.det_sequence_number(0)
-                            current_segment = {
-                                "SYN": 0,
-                                "ACK": 0,
-                                "FIN": 0,
-                                "seq": current_seq,
-                                "data": current_data
-                            }
-                            self.sckt_gbn.sendto(self.create_segment(current_segment), self.remote_address, timer_index=t_index)
-                            if self.debug:
-                                print("envie:", current_segment)
-                    elif parsed_ans["ACK"] == 1 and parsed_ans["seq"] > self.message_seq:
-                        for i in range(WINDOW_SIZE):
-                            if data_to_send.get_data(i) is not None:
-                                if data_to_send.get_sequence_number(i) == parsed_ans["seq"]:
-                                    data_to_send.move_window(i+1)
-                                    break
-                            else:
-                                break
+                if sender != self.remote_address or parsed_ans["ACK"] != 1:
+                    continue
+
+                acked = 0
+                for i in range(next_to_send - base):
+                    if window.get_sequence_number(i) == parsed_ans["seq"]:
+                        acked = i + 1
+                        break
+                if acked == 0:
+                    continue
+
+                for data_index in range(base, base + acked):
+                    self.sckt_gbn.stop_timer(timer_index=data_index)
+                window.move_window(acked)
+                base += acked
+                timeouts = 0
+                if window.get_data(0) is not None:
+                    self.message_seq = window.get_sequence_number(0)
+                send_new_segments()
 
             except TimeoutError:
-                t_index += 1
-                for i in range(WINDOW_SIZE):
-                    if data_to_send.get_data(i) is not None:
-                        try:
-                            self.sckt_gbn.sendto(self.create_segment(current_segment), self.remote_address, timer_index=t_index)
-                            if self.debug:
-                                print("envie:", current_segment)
-                        except IndexError:
-                            if self.debug:
-                                print("se supero el umbral de timeouts")
-                                print("se acabo send")
-                            self.close()
-                            return
-                    else:
-                        break
+                timeouts += 1
+                if timeouts == LIMIT:
+                    self.close()
+                    return
+                for data_index in range(base, next_to_send):
+                    self.sckt_gbn.stop_timer(timer_index=data_index)
+                for data_index in range(base, next_to_send):
+                    send_segment(data_index)
 
-        return
+        self.message_seq = end_seq
 
     def close(self):
         try:
