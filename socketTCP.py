@@ -728,6 +728,12 @@ class SocketTCP:
                     print("recibi:", parsed_ans)
                 if sender != self.remote_address or parsed_ans["ACK"] != 1:
                     continue
+                if sender == self.remote_address and parsed_ans["FIN"] == 1:
+                    if self.debug:
+                        print("se recibio mensaje de cierre")
+                        print("se acabo recv")
+                    self.recv_close()
+                    return
 
                 acked = 0
                 for i in range(next_to_send - base):
@@ -753,6 +759,12 @@ class SocketTCP:
                         parsed_msg = self.parse_segment(msg)
                         if self.debug:
                             print("recibi:", parsed_msg)
+                        if snd == self.remote_address and parsed_msg["FIN"] == 1:
+                            if self.debug:
+                                print("se recibio mensaje de cierre")
+                                print("se acabo recv")
+                            self.recv_close()
+                            return
                         if snd == self.remote_address and parsed_msg["SYN"] == 1 and parsed_msg["ACK"] == 1:
                             self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
                             flag_synack = 1
@@ -762,6 +774,10 @@ class SocketTCP:
                     except TimeoutError:
                         if self.debug:
                             print("no pude recibir")
+                    except:
+                        if self.debug:
+                            print("ya se habia cerrado la conexion")
+                        return
                 else:
                     if self.debug:
                         print("no pude recibir")
@@ -777,6 +793,10 @@ class SocketTCP:
                     self.sckt_gbn.stop_timer(timer_index=data_index)
                 for data_index in range(base, next_to_send):
                     send_segment(data_index)
+            except:
+                if self.debug:
+                    print("ya se habia cerrado la conexion")
+                return
 
         self.message_seq = end_seq
 
