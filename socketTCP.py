@@ -546,7 +546,7 @@ class SocketTCP:
                 "seq": -1,
                 "data": b''
             }
-            sender = ""
+            sender = "-"
         
             limit = 0
             while sender != self.remote_address_gbn or parsed_first["seq"] != self.message_seq:
