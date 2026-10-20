@@ -727,6 +727,10 @@ class SocketTCP:
                     print("recibi:", parsed_ans)
                 if sender != self.remote_address or parsed_ans["ACK"] != 1:
                     continue
+                if sender == self.remote_address and parsed_ans["SYN"] == 1 and parsed_ans["ACK"] == 1:
+                    self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
+                    if self.debug:
+                        print("envie:", self.last_send)
 
                 acked = 0
                 for i in range(next_to_send - base):
@@ -746,8 +750,13 @@ class SocketTCP:
                 send_new_segments()
 
             except TimeoutError:
+                if self.debug:
+                    print("no pude recibir")
                 timeouts += 1
                 if timeouts == LIMIT:
+                    if self.debug:
+                        print("se supero el umbral de espera de mensajes, para no enviar eternamente voy a cerrar nomas")
+                        print("se acabo send")
                     self.close()
                     return
                 for data_index in range(base, next_to_send):
