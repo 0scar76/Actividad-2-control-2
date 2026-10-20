@@ -37,13 +37,25 @@ El repositorio incluye un archivo test.txt de largo 38 (el largo del archivo es 
 
 ## Decisiones creativas
 
-anotar al final
+En esta actividad, la clase **socketTCP** controla 2 sockets UDP, uno creado con la clase socketUDP entregada por el equipo docente y otro implementado con la libreria socket de Python. Esto se hizo asi, ya que, como se reutilizo la clase **socketTCP** de la actividad 1 (que usa socket UDP de la libreria socket), para no reimplementar todo el codigo con la clase socketUDP (no funcionaba correctamente simplemente cambiar el tipo de socket a usar), esta se utilizo unicamente en el metodo de envio con Go Back-N.
+
+Fuera de este detalle, el resto del codigo sigue las mismas decisiones de diseño de la implementacion en la actividad 1 y el enunciado de la actividad 2.
 
 ## Implementación
 
-anotar al final
+La clase **socketTCP(timeout=1, debug=False, max_timeouts=WINDOW_SIZE)** recibe los mismos argumentos que en la actividad 1 mas el argumento max_timeouts, que por defecto es igual al tamaño de la sliding window (el tamaño de la ventana se puede cambiar con la variable WINDOW_SIZE).
 
-## Respuestas a las preguntas (escribir mas bonito dsp)
+En esta actividad se añadieron ademas los siguientes recursos:
+* **sckt_gbn:** El socket creado con la clase SocketUDP, que sera usado en Go Back-N.
+* **remote_address_gbn:** La direccion del socket que se usa para el envio en Go Back-N.
 
-1. Porque stop & wait es equivalente a usar go back n con ventana = 1.
-2. Para receive el unico cambio significativo es el manejo de los numeros de secuencia, en vez de enviar un ACK con el numero de secuencia aumentado en el tamaño del mensaje recibido, solo aumenta seq en 1.
+Las funciones agregadas en esta actividad (ademas de las pedidas por enunciado) corresponden a 2 funciones auxiliares de la funcion **send_with_go_back_n**.
+
+## Respuestas a las preguntas de la parte 2.1
+
+1. ¿Por que le puede servir usar como base para Go Back-N el codigo de Stop & Wait de la seccion anterior? ¿Que similitud tiene Go Back-N con Stop & Wait?
+- Porque Stop & Wait es equivalente a usar Go Back-N con un tamaño de ventana igual a 1.
+2. En la sección anterior solo se muestra la funcion **send** de Stop & Wait, ¿Qué ocurre con la función **recv**? ¿Esta función cambia con el uso de SocketUDP y SlidingWindowsCC?
+- Para recv el unico cambio significativo es el manejo de los numeros de secuencia, en vez de enviar un ACK con el numero de secuencia aumentado en el tamaño del mensaje recibido, envia el mismo numero de secuencia que recibio en el mensaje. Fuera de esto, no hay cambio con el uso de SocketUDP y SlidingWindowsCC.
+
+## Pruebas de enunciado

@@ -684,6 +684,7 @@ class SocketTCP:
         return message
 
     def send_using_go_back_n(self, message):
+        flag_synack = 0
         msg_len = len(message)
         data = [msg_len.to_bytes(BYTES_NUM)]
         
@@ -727,10 +728,6 @@ class SocketTCP:
                     print("recibi:", parsed_ans)
                 if sender != self.remote_address or parsed_ans["ACK"] != 1:
                     continue
-                if sender == self.remote_address and parsed_ans["SYN"] == 1 and parsed_ans["ACK"] == 1:
-                    self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
-                    if self.debug:
-                        print("envie:", self.last_send)
 
                 acked = 0
                 for i in range(next_to_send - base):
@@ -750,8 +747,25 @@ class SocketTCP:
                 send_new_segments()
 
             except TimeoutError:
-                if self.debug:
-                    print("no pude recibir")
+                if flag_synack == 0:
+                    try:
+                        msg, snd = self.sckt.recvfrom(5)
+                        parsed_msg = self.parse_segment(msg)
+                        if self.debug:
+                            print("recibi:", parsed_msg)
+                        if snd == self.remote_address and parsed_msg["SYN"] == 1 and parsed_msg["ACK"] == 1:
+                            self.sckt.sendto(self.create_segment(self.last_send), self.remote_address)
+                            flag_synack = 1
+                            if self.debug:
+                                print("envie:", self.last_send)
+                            continue
+                    except TimeoutError:
+                        if self.debug:
+                            print("no pude recibir")
+                else:
+                    if self.debug:
+                        print("no pude recibir")
+
                 timeouts += 1
                 if timeouts == LIMIT:
                     if self.debug:
