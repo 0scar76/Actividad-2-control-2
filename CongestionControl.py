@@ -17,9 +17,8 @@ class CongestionControl:
     def event_ack_received(self):
         if self.current_state == 0:
             self.cwnd += self.MSS
-            if self.ssthresh is not None:
-                if self.cwnd >= self.ssthresh:
-                    self.current_state = 1
+            if self.ssthresh is not None and self.cwnd >= self.ssthresh:
+                self.current_state = 1
         else:
             self.cwnd += 1/self.get_MSS_in_cwnd() * self.MSS
         return
